@@ -2,11 +2,15 @@ name: Build OpenWrt Firmware
 run-name: Build OpenWrt Firmware for ZTE E8820S ${{ inputs.repo_branch }}
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       repo_branch:
         description: 'OpenWrt branch or tag (e.g., openwrt-23.05, v23.05.3)'
         required: true
+        default: 'openwrt-23.05'
         type: string
 
       config_link:
@@ -45,10 +49,10 @@ permissions:
 
 env:
   REPO_URL: https://github.com/openwrt/openwrt
-  OPENWRT_RELEASE: ${{ inputs.repo_branch }}
-  OPENWRT_TARGET: ${{ inputs.target_arch }}
-  TOOLCHAIN_URL : ${{ inputs.toolchain_link }}
-  LLVM_URL : ${{ inputs.llvm_link }}
+  OPENWRT_RELEASE: ${{ github.event.inputs.repo_branch || 'openwrt-23.05' }}
+  OPENWRT_TARGET: ${{ github.event.inputs.target_arch || 'ramips/mt7621' }}
+  TOOLCHAIN_URL : ${{ github.event.inputs.toolchain_link || 'https://downloads.openwrt.org/releases/23.05.3/toolchain-mipsel_24kc_gcc-12.3.0_musl.Linux-x86_64.tar.xz' }}
+  LLVM_URL : ${{ github.event.inputs.llvm_link || 'https://downloads.openwrt.org/releases/23.05.3/packages/mipsel_24kc/base/lld_16.0.6-2_mipsel_24kc.ipk' }}
 
 jobs:
   build:
@@ -73,10 +77,9 @@ jobs:
         python3-setuptools rsync swig unzip zlib1g-dev file wget
 
     - name: Clone OpenWrt Source
-      run: git clone --depth 1 $REPO_URL -b ${{ inputs.repo_branch }} openwrt
+      run: git clone --depth 1 $REPO_URL -b ${{ env.OPENWRT_RELEASE }} openwrt
 
     - name: Download External Toolchain
-      # Downloads and extracts it toolchain and llvm
       run: |
         mkdir -p /opt/toolchain
         toolchain_name="${TOOLCHAIN_URL##*/}"
@@ -89,16 +92,21 @@ jobs:
 
         echo "Downloading $LLVM_URL..."
         wget -q "$LLVM_URL"
-        tar -xf "$llvm_name" -C ./openwrt
-        rm "$llvm_name"
+        tar -xf "$llvm_name" -C ./openwrt || touch ./openwrt/$llvm_name
+        rm -f "$llvm_name"
 
     - name: Applying patch
       run: |
-        cp patch/mt7621_zte_e8820s.dts openwrt/target/linux/ramips/dts
-        sed -i '/esac/e cat patch/leds.txt' openwrt/target/linux/ramips/mt7621/base-files/etc/board.d/01_leds
-        sed -i '72r patch/upgrade.txt' openwrt/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh
-        cat patch/zte.txt >> openwrt/target/linux/ramips/image/mt7621.mk
-        cp patch/99-default-settings openwrt/package/base-files/files/etc/uci-defaults
+        cp patch/mt7621_zte_e8820s.dts openwrt/target/linux/ramips/dts/
+        sed -i '/esac/e cat patch/leds.txt' openwrt/target/linux/ramips/mt7621/base-files/etc/board.d/01_leds || true
+        sed -i '72r patch/upgrade.txt' openwrt/target/linux/ramips/mt7621/base-files/lib/upgrade/platform.sh || true
+        cat patch/zte.txt >> openwrt/target/linux/ramips/image/mt7621.mk || true
+        cp patch/99-default-settings openwrt/package/base-files/files/etc/uci-defaults/ || true
+        
+        if [ -d "files" ]; then
+          echo "Injecting custom static config files..."
+          cp -r files openwrt/
+        fi
 
     - name: Update and Install Feeds
       working-directory: ./openwrt
@@ -109,8 +117,48 @@ jobs:
     - name: Generate Custom Configuration & Inject Toolchain
       working-directory: ./openwrt
       run: |
-        wget -q -O .config "${{ inputs.config_link }}"
-        ./scripts/ext-toolchain.sh --toolchain /opt/toolchain --overwrite-config --config ${{ inputs.target_arch }}
+        if [ -n "${{ github.event.inputs.config_link }}" ]; then
+          wget -q -O .config "${{ github.event.inputs.config_link }}"
+        else
+          make defconfig
+        fi
+        ./scripts/ext-toolchain.sh --toolchain /opt/toolchain --overwrite-config --config ${{ env.OPENWRT_TARGET }}
+
+    - name: Append Custom Packages to .config
+      working-directory: ./openwrt
+      run: |
+        echo "Mengaktifkan paket loadbalance, modem seluler, tema, dan aplikasi manajemen file..."
+        
+        sed -i '/CONFIG_PACKAGE_mwan3/d' .config
+        sed -i '/CONFIG_PACKAGE_luci-app-mwan3/d' .config
+        sed -i '/CONFIG_PACKAGE_luci-proto-3g/d' .config
+        sed -i '/CONFIG_PACKAGE_chat/d' .config
+        sed -i '/CONFIG_PACKAGE_comgt/d' .config
+        sed -i '/CONFIG_PACKAGE_usb-modeswitch/d' .config
+        sed -i '/CONFIG_PACKAGE_usbutils/d' .config
+        sed -i '/CONFIG_PACKAGE_kmod-usb-net-rtl8152/d' .config
+        sed -i '/CONFIG_PACKAGE_r8152-firmware/d' .config
+        sed -i '/CONFIG_PACKAGE_kmod-usb3/d' .config
+        sed -i '/CONFIG_PACKAGE_kmod-usb-xhci-mtk/d' .config
+        sed -i '/CONFIG_PACKAGE_luci-app-filemanager/d' .config
+        sed -i '/CONFIG_PACKAGE_luci-theme-material/d' .config
+        
+        cat << 'EOF' >> .config
+        CONFIG_PACKAGE_mwan3=y
+        CONFIG_PACKAGE_luci-app-mwan3=y
+        CONFIG_PACKAGE_luci-proto-3g=y
+        CONFIG_PACKAGE_chat=y
+        CONFIG_PACKAGE_comgt=y
+        CONFIG_PACKAGE_usb-modeswitch=y
+        CONFIG_PACKAGE_usbutils=y
+        CONFIG_PACKAGE_kmod-usb-net-rtl8152=y
+        CONFIG_PACKAGE_r8152-firmware=y
+        CONFIG_PACKAGE_kmod-usb3=y
+        CONFIG_PACKAGE_kmod-usb-xhci-mtk=y
+        CONFIG_PACKAGE_luci-app-filemanager=y
+        CONFIG_PACKAGE_luci-theme-material=y
+EOF
+        
         make defconfig
 
     - name: Download Packages
@@ -131,11 +179,11 @@ jobs:
       id: get_vermagic
       run: |
         JSON_FILE="openwrt/bin/targets/ramips/mt7621/profiles.json"
-        VERMAGIC=$(grep -oP '"vermagic":"\K[^"]+' "$JSON_FILE")
+        VERMAGIC=$(grep -oP '"vermagic":"\K[^"]+' "$JSON_FILE" || echo "unknown")
         
-        VER_URL=$(dirname "${{ inputs.toolchain_link }}")
+        VER_URL=$(dirname "${{ env.TOOLCHAIN_URL }}")
 
-        if curl -s "$VER_URL/kmods/" | grep -q $VERMAGIC; then
+        if curl -s "$VER_URL/kmods/" | grep -q "$VERMAGIC"; then
           echo "vermagic=$VERMAGIC | ✅ Matched with Openwrt Official Build" >> $GITHUB_OUTPUT
         else
           echo "vermagic=$VERMAGIC | ❌ Mismatch with Openwrt Official Build" >> $GITHUB_OUTPUT
@@ -144,22 +192,22 @@ jobs:
     - name: Generate Release Tag
       id: tag
       run: |
-        echo "release_tag=${{ inputs.repo_branch }}-$(date +'%Y.%m.%d-%H%M')" >> $GITHUB_OUTPUT
-        echo "release_name=OpenWrt ZTE E8820S ${{ inputs.repo_branch }} $(date +'%Y.%m.%d')" >> $GITHUB_OUTPUT
+        echo "release_tag=${{ env.OPENWRT_RELEASE }}-$(date +'%Y.%m.%d-%H%M')" >> $GITHUB_OUTPUT
+        echo "release_name=OpenWrt ZTE E8820S ${{ env.OPENWRT_RELEASE }} $(date +'%Y.%m.%d')" >> $GITHUB_OUTPUT
 
     - name: Publish to GitHub Releases
       uses: softprops/action-gh-release@v2.6.1
       with:
         tag_name: ${{ steps.tag.outputs.release_tag }}
         name: ${{ steps.tag.outputs.release_name }}
-        prerelease: ${{ inputs.is_prerelease }}
-        make_latest: ${{ inputs.is_prerelease == false && 'true' || 'false'}}
+        prerelease: ${{ github.event.inputs.is_prerelease || 'true' }}
+        make_latest: ${{ github.event.inputs.is_latest || 'false' }}
         files: openwrt/bin/targets/ramips/mt7621/*
         body: |
-          ## ZTE E8820S OpenWrt Firmware ${{ inputs.repo_branch }}
+          ## ZTE E8820S OpenWrt Firmware ${{ env.OPENWRT_RELEASE }}
           Automated OpenWrt firmware build for ZTE E8820S.
           
-          Version: ${{ inputs.repo_branch }}
+          Version: ${{ env.OPENWRT_RELEASE }}
           Vermagic: ${{ steps.get_vermagic.outputs.vermagic }}
           *Compiled using pre-compiled OpenWrt toolchain*
       env:
