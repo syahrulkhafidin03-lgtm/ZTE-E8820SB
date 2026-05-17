@@ -1,0 +1,54 @@
+
+config defaults
+	option input 'REJECT'
+	option output 'ACCEPT'
+	option forward 'REJECT'
+	option synflood_protect '1'
+
+config zone
+	option name 'lan'
+	option input 'ACCEPT'
+	option output 'ACCEPT'
+	option forward 'ACCEPT'
+	list network 'lan'
+
+config zone 'wan_zone'
+	option name 'wan_zone'
+	option masq '1'
+	list network 'wan1'
+	list network 'wan2'
+	list network 'wan3'
+	list network 'wan4'
+	option input 'REJECT'
+	option output 'ACCEPT'
+	option forward 'REJECT'
+
+config zone 'usb_zone'
+	option name 'usb_zone'
+	option masq '1'
+	list network 'wanusb'
+	list network 'MODEM_XIDOL'
+	option input 'REJECT'
+	option output 'ACCEPT'
+	option forward 'REJECT'
+
+config zone 'wifi_zone'
+	option name 'wifi_zone'
+	option masq '1'
+	list network 'wwan'
+	list network 'wwan2'
+	option input 'REJECT'
+	option output 'ACCEPT'
+	option forward 'REJECT'
+
+config forwarding
+	option src 'lan'
+	option dest 'wan_zone'
+
+config forwarding
+	option src 'lan'
+	option dest 'usb_zone'
+
+config forwarding
+	option src 'lan'
+	option dest 'wifi_zone'
